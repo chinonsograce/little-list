@@ -5,7 +5,11 @@ services:
     plan: free
     healthCheckPath: /api/health
     envVars:
-      - key: PUBLIC_DEMO
+      - key: COOKIE_SECURE
         value: "1"
-      - key: TODO_DB_PATH
-        value: /app/data/tasks.sqlite3
+      - key: REQUIRE_REMOTE_DB
+        value: "1"
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false

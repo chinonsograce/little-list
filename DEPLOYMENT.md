@@ -1,22 +1,21 @@
-# Free public deployment
+# Free deployment with persistent private lists
 
-The Dockerfile builds React and serves it with FastAPI at one public URL. SQLite remains the database. The Render blueprint explicitly uses the Free plan, with no paid disk or database.
+Render runs the React/FastAPI app; a separate Turso **libSQL** database stores accounts, sessions, and tasks. Local Windows development keeps using SQLite. Local data is not automatically uploaded.
 
-## Limits of this assignment demo
+1. Sign in at https://app.turso.tech/ and select the Free plan.
+2. Create a **libSQL** database called little-list near the Render region. This app uses libSQL, not the newer Turso rewrite driver.
+3. Obtain the database URL and a database-scoped read/write token. Keep the token private.
+4. In https://dashboard.render.com/ choose New > Blueprint and connect the little-list repository. Select the Free plan only.
+5. Enter TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in the environment settings. Never put them in GitHub or frontend variables.
+6. The blueprint sets REQUIRE_REMOTE_DB=1 and COOKIE_SECURE=1. Missing database configuration blocks startup rather than silently losing data in temporary storage.
+7. Wait for Live, open the HTTPS URL, create an app account, add a task, restart the service, and verify it remains. Verify a second account cannot access the first account's tasks.
 
-Everyone shares the same task list and can edit it. Do not enter personal information. Render Free uses temporary storage: task changes can disappear when the app sleeps, restarts, or redeploys. The first visit after inactivity can take longer to load. Your local SQLite database is excluded from GitHub and from the deployment image.
+Render Free may sleep, making the first request slow. Turso retains data independently of app restarts. Free plans have quotas and may change. Backups are advisable; persistent storage is not a substitute for backups.
 
-## GitHub
+Passwords use salted PBKDF2-SHA256 with 600,000 iterations. Sessions expire after seven days and use HttpOnly/SameSite cookies, HTTPS-only in deployment. Logout revokes sessions. Every task operation checks ownership. Mutations require a custom request header and reject foreign origins. Sign-in attempts are throttled.
 
-Create an empty repository named `little-list` in your GitHub account. Upload the project source, including Dockerfile and render.yaml. Do not upload .venv, node_modules, database files, or secrets. Use a public repository if your assignment requires publicly accessible code.
+Password recovery, email verification, and account deletion are not implemented. Keep your password safe. Old unowned local tasks are preserved, never assigned automatically; see README.md for an explicit migration command.
 
-## Render
+Tests cover ownership, sessions, logout, throttling, CSRF checks, tasks and database migration. CI also runs against the native libSQL driver. Cloud persistence must be verified on the actual deployment before calling it complete.
 
-1. Sign in at https://dashboard.render.com/ and connect your GitHub account.
-2. Choose New > Blueprint and select the repository containing this project.
-3. Check that the service uses **Free**. Do not upgrade or add a paid disk.
-4. Deploy and wait for the service to become Live.
-5. Open the generated HTTPS onrender.com address and test adding a task, notes, editing, and restore. Use /api/health to check the server and /docs for API documentation.
-6. Submit the GitHub repository URL and the public app URL.
-
-Official documentation: https://render.com/docs/free and https://render.com/docs/docker
+References: https://render.com/docs/free and https://docs.turso.tech/sdk/python/quickstart

@@ -8,11 +8,27 @@ from pathlib import Path
 temporary = tempfile.TemporaryDirectory()
 os.environ['TODO_DB_PATH'] = str(Path(temporary.name) / 'test.sqlite3')
 from fastapi.testclient import TestClient
-from backend.main import app
+from backend.main import app, database
+if os.environ.get('TEST_DRIVER') == 'libsql':
+    import libsql
+    import backend.main
+    from backend.storage import Connection
+    backend.main.connect = lambda path: Connection(libsql.connect(str(path)))
+HEADERS={"X-Little-List":"1"}
+CREDENTIALS={"username":"test_owner","password":"test-password-long-enough"}
+
+def login(client):
+    client.headers.update(HEADERS)
+    result=client.post("/api/auth/login",json=CREDENTIALS)
+    if result.status_code==401:
+        result=client.post("/api/auth/register",json=CREDENTIALS)
+    assert result.status_code==200, result.text
+    return result.json()
 
 class TasksTest(unittest.TestCase):
     def test_complete_workflow_and_persistence(self):
         with TestClient(app) as client:
+            login(client)
             self.assertEqual(client.get('/api/tasks').json(), [])
             self.assertEqual(client.post('/api/tasks', json={'title':'   '}).status_code, 422)
             self.assertEqual(client.post('/api/tasks', json={'title':'x'*301}).status_code, 422)
@@ -28,6 +44,7 @@ class TasksTest(unittest.TestCase):
             self.assertEqual(client.put('/api/tasks/order',json={'ids':[first['id'],first['id']]}).status_code,409)
             self.assertEqual(client.put('/api/tasks/order',json={'ids':[second['id'],first['id']]}).status_code,200)
         with TestClient(app) as client:
+            login(client)
             saved = client.get('/api/tasks').json()
             self.assertEqual([t['id'] for t in saved],[second['id'],first['id']])
             self.assertTrue(saved[1]['completed'])
@@ -46,6 +63,7 @@ class TasksTest(unittest.TestCase):
             client.delete(f"/api/tasks/{second['id']}")
             self.assertEqual(client.get('/api/tasks').json(),[])
         with TestClient(app) as client:
+            login(client)
             self.assertEqual(len(client.get('/api/tasks/trash').json()),2)
             restored=client.post(f"/api/tasks/{second['id']}/restore").json()[0]
             for key,value in details.items(): self.assertEqual(restored[key],value)
@@ -61,11 +79,62 @@ class TasksTest(unittest.TestCase):
         db.close()
         with patch('backend.main.DB_PATH',legacy):
             with TestClient(app) as client:
-                tasks=client.get('/api/tasks').json()
-                self.assertEqual(tasks,[{'id':1,'title':'Existing task','completed':True,'position':0,'notes':'','due_date':None,'priority':'medium'}])
+                owner=login(client)
+                self.assertEqual(client.get('/api/tasks').json(),[])
+                with database() as db:
+                    row=db.execute('SELECT * FROM tasks WHERE id = 1').fetchone()
+                    self.assertEqual(row['title'],'Existing task')
+                    self.assertIsNone(row['user_id'])
+                    db.execute('UPDATE tasks SET user_id = ? WHERE id = 1',(owner['id'],))
                 self.assertEqual(client.put('/api/tasks/1/notes',json={'notes':'Keep this note'}).status_code,200)
             with TestClient(app) as client:
+                login(client)
                 self.assertEqual(client.get('/api/tasks').json()[0]['notes'],'Keep this note')
+
+    def test_private_accounts_sessions_and_csrf(self):
+        private = Path(temporary.name) / 'private.sqlite3'
+        with patch('backend.main.DB_PATH',private):
+            with TestClient(app) as alice, TestClient(app) as bob:
+                self.assertEqual(alice.get('/api/tasks').status_code,401)
+                self.assertEqual(alice.post('/api/tasks',json={'title':'No header'}).status_code,403)
+                alice.headers.update(HEADERS);bob.headers.update(HEADERS)
+                login(alice)
+                b=bob.post('/api/auth/register',json={'username':'another_user','password':'different-long-password'})
+                self.assertEqual(b.status_code,200)
+                token=alice.cookies.get('little_list_session')
+                task=alice.post('/api/tasks',json={'title':'Private task'}).json()
+                task_id=task['id']
+                self.assertEqual(bob.get('/api/tasks').json(),[])
+                for method,path,body in [('patch',f'/api/tasks/{task_id}',{'completed':True}),('put',f'/api/tasks/{task_id}/notes',{'notes':'intrusion'}),('put',f'/api/tasks/{task_id}/details',{'title':'intrusion'}),('delete',f'/api/tasks/{task_id}',None),('post',f'/api/tasks/{task_id}/restore',None)]:
+                    self.assertEqual(bob.request(method,path,json=body).status_code,404)
+                self.assertEqual(bob.put('/api/tasks/order',json={'ids':[task_id]}).status_code,409)
+                self.assertEqual(alice.post('/api/tasks',headers={'Origin':'https://evil.example'},json={'title':'CSRF'}).status_code,403)
+                self.assertEqual(alice.get('/api/tasks').headers['cache-control'],'no-store')
+                alice.delete(f'/api/tasks/{task_id}')
+                self.assertEqual(bob.get('/api/tasks/trash').json(),[])
+                self.assertEqual(bob.post(f'/api/tasks/{task_id}/restore').status_code,404)
+                alice.post(f'/api/tasks/{task_id}/restore')
+                with database() as db:
+                    self.assertNotEqual(db.execute('SELECT password_hash FROM users WHERE username = ?',('test_owner',)).fetchone()['password_hash'],CREDENTIALS['password'])
+                    self.assertIsNone(db.execute('SELECT * FROM sessions WHERE token_hash = ?',(token,)).fetchone())
+            with TestClient(app) as returning:
+                returning.headers.update(HEADERS)
+                returning.cookies.set('little_list_session',token)
+                self.assertEqual(returning.get('/api/tasks').json()[0]['title'],'Private task')
+                self.assertEqual(returning.post('/api/logout').status_code,204)
+                returning.cookies.set('little_list_session',token)
+                self.assertEqual(returning.get('/api/tasks').status_code,401)
+                self.assertEqual(returning.post('/api/auth/login',json=dict(CREDENTIALS,password='wrong-password-long')).status_code,401)
+                with database() as db:
+                    db.execute("UPDATE auth_attempts SET attempts = 10 WHERE key = 'user:test_owner'")
+                self.assertEqual(returning.post('/api/auth/login',json=CREDENTIALS).status_code,429)
+
+    def test_cloud_configuration_fails_closed(self):
+        from backend.storage import connect
+        with patch.dict(os.environ,{'REQUIRE_REMOTE_DB':'1','TURSO_DATABASE_URL':'','TURSO_AUTH_TOKEN':''}):
+            with self.assertRaises(RuntimeError): connect(':memory:')
+        with patch.dict(os.environ,{'TURSO_DATABASE_URL':'libsql://example.turso.io','TURSO_AUTH_TOKEN':''}):
+            with self.assertRaises(RuntimeError): connect(':memory:')
 
 if __name__ == '__main__':
     unittest.main()

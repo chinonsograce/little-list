@@ -2,6 +2,10 @@
 
 A to-do app using **React**, **Python / FastAPI**, and **SQLite**.
 
+## Accounts and private lists
+
+Create an account on the sign-in page using a username and a password of at least 12 characters. Each account has its own tasks and notes. Use Sign out on shared computers. Sessions expire after seven days. Password recovery is not yet available; save your password securely.
+
 ## Open the app
 
 Once setup is complete, double-click `start.bat` in this folder. Keep the window open, then visit **http://127.0.0.1:8000** in your browser. Press Ctrl+C in that window to stop the app.
@@ -29,11 +33,13 @@ Run `node --test src/voiceCommands.test.js` to test command interpretation witho
 
 ## Where your data lives
 
-Your tasks are stored in `backend/tasks.sqlite3`. Closing the browser or stopping the server does not erase them. To make a backup, stop the app and copy that file somewhere safe. The app is local to this computer, with no account or cloud sync. Do not expose this development server to the internet.
+Your tasks are stored in `backend/tasks.sqlite3`. Closing the browser or stopping the server does not erase them. To make a backup, stop the app and copy that file somewhere safe. Local accounts and data stay on this computer. Public hosting uses a separate Turso libSQL database; see DEPLOYMENT.md. App restarts do not erase cloud data. Do not expose the local development server directly to the internet.
+
+Tasks from before private accounts were added are preserved but hidden. After creating your account, run `python -m backend.assign_legacy --username YOUR_USERNAME` using the virtual environment to assign local legacy tasks. This is never automatic during signup.
 
 ## How it works
 
-`src/main.jsx` is the React interface; `src/style.css` controls its appearance. React sends requests to `backend/main.py`, the FastAPI server, which reads and writes SQLite using Python's built-in database library. The production frontend is built into `dist/`, and FastAPI serves it alongside the API. API documentation is available at http://127.0.0.1:8000/docs while running.
+`src/main.jsx` is the React interface; `src/style.css` controls its appearance. React sends requests to `backend/main.py`, the FastAPI server, which reads and writes local SQLite or remote Turso libSQL through `backend/storage.py`. Credentials stay on the backend. The production frontend is built into `dist/`, and FastAPI serves it alongside the API. API documentation is available at http://127.0.0.1:8000/docs while running.
 
 ## First-time setup on another computer
 

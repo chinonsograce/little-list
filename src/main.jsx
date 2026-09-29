@@ -6,9 +6,11 @@ import {parseCommand} from './voiceCommands.js';
 import TaskNote from './TaskNote.jsx';
 import TaskDetails from './TaskDetails.jsx';
 import {matchesTask,isOverdue} from './taskFilters.js';
+import Account,{accountRequest} from './Account.jsx';
 
 async function api(path = '', method = 'GET', body) {
-  const response = await fetch(`/api/tasks${path}`, {method, headers: {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
+  const response = await fetch(`/api/tasks${path}`, {method, headers: {'Content-Type': 'application/json','X-Little-List':'1'}, body: body === undefined ? undefined : JSON.stringify(body)});
+  if(response.status===401) window.dispatchEvent(new Event('session-expired'));
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not save your changes. Please try again.');
@@ -16,10 +18,8 @@ async function api(path = '', method = 'GET', body) {
   return response.status === 204 ? null : response.json();
 }
 
-function App() {
+function TaskApp({user,onSignOut}) {
   const [tasks, setTasks] = useState([]);
-  const [publicDemo,setPublicDemo]=useState(false);
-  useEffect(()=>{fetch('/api/config').then(r=>r.json()).then(c=>setPublicDemo(c.public_demo)).catch(()=>{});},[]);
   const [search,setSearch]=useState('');
   const [filter,setFilter]=useState('all');
   const [priorityFilter,setPriorityFilter]=useState('all');
@@ -79,9 +79,8 @@ function App() {
     mutate(async () => setTasks(await api('/order', 'PUT', {ids: next.map(t => t.id)})));
   }
   return <div className="app">
-    <header><a className="brand" href="/" aria-label="Little List home"><span className="brand-mark">✓</span> little list<span className="brand-dot">.</span></a><span className="header-note"><span className="status-dot"/> A little space for a clearer mind</span></header>
+    <header><a className="brand" href="/" aria-label="Little List home"><span className="brand-mark">✓</span> little list<span className="brand-dot">.</span></a><div className="account-menu"><span>{user.username}</span><button disabled={busy} onClick={async()=>{try{await accountRequest('/api/logout');onSignOut();}catch(error){setError(error.message);}}}>Sign out</button></div></header>
     <main>
-      {publicDemo && <p className="undo-banner">Public demo: everyone shares this list. Use sample data only. Tasks may reset when the free server sleeps or restarts.</p>}
       <div className="eyebrow">ONE THING AT A TIME</div>
       <div className="heading-row"><div><h1>Make room for your day<span>.</span></h1><p className="intro">Big plans, small steps. It all starts with a list.</p></div><span className="date">{new Date().toLocaleDateString(undefined, {month:'short', day:'numeric', weekday:'short'})}</span></div>
       <section className="workspace" aria-label="Your to-do list">
@@ -110,4 +109,19 @@ function App() {
   </div>;
 }
 
+function App() {
+  const [user,setUser]=useState(null);
+  const [checking,setChecking]=useState(true);
+  const [error,setError]=useState('');
+  async function check() {
+    setChecking(true);setError('');
+    try {const response=await fetch('/api/auth/me');if(response.ok) setUser(await response.json());else if(response.status!==401) throw new Error();}
+    catch {setError('Could not connect to the app. Please try again.');}
+    finally {setChecking(false);}
+  }
+  useEffect(()=>{check();const expired=()=>setUser(null);window.addEventListener('session-expired',expired);return ()=>window.removeEventListener('session-expired',expired);},[]);
+  if(checking) return <main className="empty">Opening your private list…</main>;
+  if(error) return <main className="empty"><p role="alert">{error}</p><button onClick={check}>Try again</button></main>;
+  return user ? <TaskApp key={user.id} user={user} onSignOut={()=>setUser(null)}/> : <Account onSignedIn={setUser}/>;
+}
 createRoot(document.getElementById('root')).render(<App/>);
